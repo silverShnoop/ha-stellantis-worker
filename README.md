@@ -71,9 +71,16 @@ had to do because Render is x86:
   Playwright picks the system libraries its own build wants. The upstream list
   names `libasound2`, which Debian renamed to `libasound2t64` in trixie.
 - **`--only-shell`**, so the download is `chromium-headless-shell` rather than
-  full Chromium, and the system-library set shrinks with it — the shell needs
-  no GTK, X11 or audio stack. Measured against Playwright's CDN for the
-  revision 1.49.0 pins, arm64: **103 MB compressed against 165 MB**.
+  full Chromium. Measured against Playwright's CDN for the revision 1.49.0
+  pins, arm64: **103 MB compressed against 165 MB**. It does not shrink the
+  apt set: Playwright keeps one dependency list per browser rather than per
+  build, so the shell pulls the same 21 packages Chromium would.
+- **The base is pinned to `python:3.11-slim-bookworm`.** The floating
+  `-slim` tag has moved on to Debian trixie, which Playwright 1.49 does not
+  recognise — it falls back to an Ubuntu 20.04 package list naming
+  `ttf-ubuntu-font-family` and `ttf-unifont`, which do not exist on Debian,
+  and `playwright install --with-deps` exits 100. Playwright ships lists for
+  `debian11` and `debian12` only.
 - **`uvicorn` rather than `uvicorn[standard]`**, dropping uvloop, httptools,
   watchfiles and websockets. This service answers a few plain HTTP requests and
   never opens a socket.
@@ -82,9 +89,9 @@ had to do because Render is x86:
 
 | Piece | arm64, compressed |
 | --- | --- |
-| `python:3.11-slim` base | 47 MB |
+| `python:3.11-slim-bookworm` base | 45 MB |
 | `chromium-headless-shell` | 103 MB |
-| Playwright's system libraries | not measured |
+| Playwright's 21 system libraries | not measured |
 | Python packages | small |
 
 Those first two are read from Docker Hub and Playwright's CDN. The apt set is

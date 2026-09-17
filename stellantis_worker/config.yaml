@@ -1,5 +1,5 @@
 name: Stellantis Login Worker
-version: "1.1.0"
+version: "1.2.0"
 slug: stellantis_worker
 description: >-
   Local login worker for the Stellantis Vehicles integration. Drives a headless
