@@ -1,0 +1,20 @@
+name: Stellantis Login Worker
+version: "1.0.0"
+slug: stellantis_worker
+description: >-
+  Local login worker for the Stellantis Vehicles integration. Drives a headless
+  browser against the Stellantis sign-in page and returns the OAuth code, so
+  your account password never leaves your network.
+url: https://github.com/silverShnoop/ha-stellantis-worker
+arch:
+  - aarch64
+  - amd64
+init: false
+# Reachable from Home Assistant as http://local-stellantis-worker:3000 with no
+# published port. The mapping is left null so the endpoint is not on the LAN
+# unless you choose to put it there: it accepts a password in the request body,
+# so the default is the smaller surface.
+ports:
+  3000/tcp: null
+ports_description:
+  3000/tcp: Login service API (leave unset unless you need to reach it directly)

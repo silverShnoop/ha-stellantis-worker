@@ -1,0 +1,6 @@
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+# Upstream pins 1.42.0, which publishes no chromium-linux-arm64 build — that
+# install step fails outright on aarch64 (a Home Assistant Green, a Pi, any
+# ARM box). 1.49.0 is the version checked to publish one.
+playwright==1.49.0
