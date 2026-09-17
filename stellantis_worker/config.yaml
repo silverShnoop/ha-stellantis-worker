@@ -1,5 +1,5 @@
 name: Stellantis Login Worker
-version: "1.0.0"
+version: "1.1.0"
 slug: stellantis_worker
 description: >-
   Local login worker for the Stellantis Vehicles integration. Drives a headless
@@ -10,11 +10,13 @@ arch:
   - aarch64
   - amd64
 init: false
-# Reachable from Home Assistant as http://local-stellantis-worker:3000 with no
-# published port. The mapping is left null so the endpoint is not on the LAN
-# unless you choose to put it there: it accepts a password in the request body,
-# so the default is the smaller surface.
-ports:
-  3000/tcp: null
-ports_description:
-  3000/tcp: Login service API (leave unset unless you need to reach it directly)
+# No ports mapping, deliberately, and not merely unset: with the key absent
+# Supervisor publishes nothing to the host and the add-on's Network tab offers
+# no way to change that. The endpoint takes an account password in its request
+# body, so it should not be reachable from the LAN at all.
+#
+# Home Assistant still reaches it over Supervisor's internal network, as
+# http://<addon-hostname>:3000. The hostname is the slug with underscores
+# turned into dashes, prefixed by this repository's hash — it is shown on the
+# add-on's own page once installed, so read it there rather than guessing.
+host_network: false
