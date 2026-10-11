@@ -1,18 +1,66 @@
 import time
 import asyncio
+import contextvars
+import hmac
+import json
+import os
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from playwright.async_api import async_playwright
 import uuid
 
-app = FastAPI()
+# The hosts the Stellantis Vehicles integration posts as `url`: the oauth_url
+# of each brand app in its configs.json. Anything else is refused before the
+# browser is touched, so the worker cannot be sent, password in hand, to an
+# arbitrary page.
+DEFAULT_ALLOWED_HOSTS = [
+    "idpcvs.peugeot.com",
+    "idpcvs.citroen.com",
+    "idpcvs.driveds.com",
+    "idpcvs.opel.com",
+    "idpcvs.vauxhall.co.uk",
+]
+
+def load_options():
+    # Add-on options. Supervisor writes them to /data/options.json root-only,
+    # so run.sh reads the file as root and hands it over in WORKER_OPTIONS
+    # before dropping privileges; the file itself is the fallback.
+    raw = os.environ.get("WORKER_OPTIONS")
+    try:
+        if raw is None:
+            with open("/data/options.json") as f:
+                raw = f.read()
+        opts = json.loads(raw)
+    except (OSError, ValueError):
+        opts = {}
+    hosts = [str(h).strip().lower().lstrip(".") for h in opts.get("allowed_hosts") or []]
+    return {
+        "allowed_hosts": [h for h in hosts if h] or DEFAULT_ALLOWED_HOSTS,
+        "token": str(opts.get("token") or ""),
+    }
+
+options = load_options()
+
+def url_allowed(url):
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    if parts.scheme != "https" or not host or parts.username is not None:
+        return False
+    return any(host == h or host.endswith("." + h) for h in options["allowed_hosts"])
 
 browser_process_id = None
 process_start = None
 browser_start = None
 context_start = None
 
-force_debug = False
+# Per request, not a module global: set from the request's own `debug` field
+# and gone with it.
+debug_var = contextvars.ContextVar("debug", default=False)
 ok_count = 0
 ko_count = 0
 
@@ -20,8 +68,8 @@ playwright = None
 browser = None
 browser_lock = asyncio.Lock()
 
-def log_process(message, process_id, force=force_debug):
-    if force:
+def log_process(message, process_id, force=False):
+    if force or debug_var.get():
         print(f"[{process_id}] {message}")
 
 def log_start_process(process_id):
@@ -77,19 +125,18 @@ async def start_browser():
     )
     log_start_browser()
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app):
     async with browser_lock:
         await start_browser()
-
-@app.on_event("shutdown")
-async def shutdown():
-    global playwright, browser
+    yield
     if browser:
         await browser.close()
     if playwright:
         await playwright.stop()
     log_end_browser()
+
+app = FastAPI(lifespan=lifespan)
 
 def http_response(message, process_id, status=400):
     global ok_count, ko_count
@@ -116,25 +163,33 @@ def http_response(message, process_id, status=400):
 
 @app.post("/")
 async def fetch(request: Request):
-    global force_debug
-
     process_id = uuid.uuid4().hex[:8]
 
     log_start_process(process_id)
     context = None
     captured_code = None
+    code_captured = asyncio.Event()
 
     try:
+        if options["token"]:
+            sent = request.headers.get("X-Worker-Token", "")
+            if not hmac.compare_digest(sent.encode(), options["token"].encode()):
+                return http_response("Unauthorized", process_id, 401)
+
         payload = await request.json()
         url = payload.get("url")
         email = payload.get("email")
         password = payload.get("password")
         timeout_page = payload.get("timeout_page", 50000)
         timeout_input = payload.get("timeout_input", 50000)
-        force_debug = payload.get("debug", False)
+        debug = bool(payload.get("debug", False))
+        debug_var.set(debug)
 
         if not url or not email or not password:
             return http_response("Missing required params", process_id)
+
+        if not url_allowed(url):
+            return http_response("URL host not allowed", process_id)
 
         async with browser_lock:
             log_start_context(process_id)
@@ -143,8 +198,9 @@ async def fetch(request: Request):
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 viewport={"width": 1280, "height": 720},
                 java_script_enabled=True,
-                bypass_csp=True,
-                ignore_https_errors=True,
+                # The password is typed into this page: a certificate error
+                # must fail the login, not be ignored.
+                ignore_https_errors=False,
             )
 
             page = await context.new_page()
@@ -174,9 +230,10 @@ async def fetch(request: Request):
                         code = params.get("code")
                         if code:
                             captured_code = code
-                            log_process("Code captured!", process_id)
+                            code_captured.set()
+                            log_process("Code captured!", process_id, debug)
                     except Exception as e:
-                        log_process(f"URL parse error: {e}", process_id)
+                        log_process(f"URL parse error: {e}", process_id, debug)
 
             page.on("requestfailed", on_request_failed)
 
@@ -211,10 +268,10 @@ async def fetch(request: Request):
             await page.click(SELECTORS["authorize"])
 
             log_process("Waiting for code capture...", process_id)
-            await asyncio.wait_for(
-                asyncio.to_thread(lambda: captured_code),
-                timeout=timeout_page / 1000
-            )
+            try:
+                await asyncio.wait_for(code_captured.wait(), timeout=timeout_page / 1000)
+            except asyncio.TimeoutError:
+                log_process("Code capture timed out", process_id)
 
             await context.close()
             log_end_context(process_id)
